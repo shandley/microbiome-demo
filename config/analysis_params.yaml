@@ -20,13 +20,13 @@ alpha_metrics:
 
 # Beta Diversity
 beta_metric: bray_curtis
-permanova_permutations: 999
+permanova_permutations: 9999  # More permutations for robust p-values
 
 # Differential Abundance
 significance_threshold: 0.01  # More stringent threshold for publication
 min_prevalence: 0.1
 min_abundance: 0.001
-differential_method: deseq2  # options: deseq2, ancom, aldex2
+differential_method: ancom  # Switch to ANCOM for compositional data
 
 # Visualization
 top_taxa_to_plot: 20
