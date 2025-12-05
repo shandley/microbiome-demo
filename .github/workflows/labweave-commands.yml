@@ -49,13 +49,14 @@ jobs:
           script: |
             const body = `## LabWeave Commands
 
-            | Command | Description | Example |
-            |---------|-------------|---------|
-            | \`/provenance <param>\` | Show parameter change history | \`/provenance alpha\` |
-            | \`/rerun <param>=<value>\` | Request analysis rerun | \`/rerun alpha=0.10\` |
-            | \`/status\` | Show project status | \`/status\` |
-            | \`/timeline\` | Show recent activity | \`/timeline\` |
-            | \`/help\` | Show this help | \`/help\` |
+            | Command | Description |
+            |---------|-------------|
+            | \`/status\` | Show project summary (commits, methods, parameters) |
+            | \`/methods\` | List all detected analysis methods |
+            | \`/provenance\` | List all tracked parameters |
+            | \`/provenance <name>\` | Show history for a specific parameter |
+            | \`/timeline\` | Show recent commits with changes |
+            | \`/help\` | Show this help |
 
             ---
             *LabWeave - Your Research Intelligence Partner*`;
@@ -107,6 +108,53 @@ jobs:
 
             ---
             *LabWeave - Your Research Intelligence Partner*`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      - name: Handle /methods
+        if: steps.parse.outputs.command == '/methods'
+        env:
+          LABWEAVE_API_URL: ${{ secrets.LABWEAVE_API_URL }}
+          PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
+        run: |
+          if [ -z "$LABWEAVE_API_URL" ]; then
+            echo "LABWEAVE_API_URL not set"
+            exit 1
+          fi
+
+          RESPONSE=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/methods/${PROJECT_ID}/list" || echo '[]')
+
+          echo "METHODS_RESPONSE<<EOF" >> $GITHUB_ENV
+          echo "$RESPONSE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Post /methods response
+        if: steps.parse.outputs.command == '/methods'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let response;
+            try {
+              response = JSON.parse(process.env.METHODS_RESPONSE || '[]');
+            } catch (e) {
+              response = [];
+            }
+
+            let body;
+            if (!Array.isArray(response) || response.length === 0) {
+              body = `## Analysis Methods\n\nNo methods detected yet.\n\n*Methods are detected automatically from your code changes (e.g., DESeq2, PERMANOVA, t-test).*`;
+            } else {
+              let table = '| Method | Times Used |\n|--------|------------|\n';
+              for (const method of response) {
+                table += `| \`${method.method_name}\` | ${method.usage_count} |\n`;
+              }
+              body = `## Analysis Methods\n\n${table}\n\n*${response.length} methods detected across ${response.reduce((sum, m) => sum + m.usage_count, 0)} usages*`;
             }
 
             await github.rest.issues.createComment({
