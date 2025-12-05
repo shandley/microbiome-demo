@@ -21,17 +21,27 @@ jobs:
       - name: Get commit diff
         id: diff
         run: |
-          DIFF=$(git diff HEAD~1 HEAD -- . ':(exclude)*.lock' ':(exclude)package-lock.json' | head -c 50000 || echo "Initial commit")
-          echo "diff<<EOF" >> $GITHUB_OUTPUT
-          echo "$DIFF" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          DIFF=$(git diff HEAD~1 HEAD -- . ':(exclude)*.lock' ':(exclude)package-lock.json' 2>/dev/null | head -c 50000 || echo "Initial commit")
+          # Escape for JSON
+          DIFF_ESCAPED=$(echo "$DIFF" | jq -Rs .)
+          echo "diff=$DIFF_ESCAPED" >> $GITHUB_OUTPUT
 
-      - name: Get changed files
+      - name: Get changed files as JSON
         id: files
         run: |
-          FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git ls-tree --name-only -r HEAD)
+          # Build files array with proper structure
+          FILES_JSON="[]"
+          for file in $(git diff --name-only HEAD~1 HEAD 2>/dev/null || git ls-tree --name-only -r HEAD); do
+            STATUS="modified"
+            if ! git show HEAD~1:"$file" &>/dev/null 2>&1; then
+              STATUS="added"
+            fi
+            PATCH=$(git diff HEAD~1 HEAD -- "$file" 2>/dev/null | head -c 5000 || echo "")
+            PATCH_ESCAPED=$(echo "$PATCH" | jq -Rs .)
+            FILES_JSON=$(echo "$FILES_JSON" | jq --arg f "$file" --arg s "$STATUS" --argjson p "$PATCH_ESCAPED" '. + [{"filename": $f, "status": $s, "additions": 0, "deletions": 0, "changes": 0, "patch": $p}]')
+          done
           echo "files<<EOF" >> $GITHUB_OUTPUT
-          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "$FILES_JSON" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Get project metadata
@@ -40,11 +50,13 @@ jobs:
           if [ -f ".labweave-metadata.json" ]; then
             PROJECT_ID=$(jq -r '.project_id // empty' .labweave-metadata.json)
             PROJECT_NAME=$(jq -r '.project_name // empty' .labweave-metadata.json)
-            DOMAIN=$(jq -r '.domain // empty' .labweave-metadata.json)
+            RESEARCHERS=$(jq -c '.team // []' .labweave-metadata.json)
+            DESCRIPTION=$(jq -r '.description // empty' .labweave-metadata.json)
           fi
           echo "project_id=${PROJECT_ID:-${{ github.repository }}}" >> $GITHUB_OUTPUT
           echo "project_name=${PROJECT_NAME:-${{ github.event.repository.name }}}" >> $GITHUB_OUTPUT
-          echo "domain=${DOMAIN:-unknown}" >> $GITHUB_OUTPUT
+          echo "researchers=${RESEARCHERS:-[]}" >> $GITHUB_OUTPUT
+          echo "description=${DESCRIPTION:-}" >> $GITHUB_OUTPUT
 
       - name: Send to LabWeave
         env:
@@ -56,33 +68,41 @@ jobs:
             exit 0
           fi
 
+          # Build the payload matching the API schema
           PAYLOAD=$(jq -n \
             --arg sha "${{ github.sha }}" \
             --arg message "${{ github.event.head_commit.message }}" \
-            --arg author "${{ github.event.head_commit.author.username }}" \
-            --arg email "${{ github.event.head_commit.author.email }}" \
+            --arg author_name "${{ github.event.head_commit.author.name }}" \
+            --arg author_email "${{ github.event.head_commit.author.email }}" \
+            --arg author_username "${{ github.event.head_commit.author.username }}" \
             --arg timestamp "${{ github.event.head_commit.timestamp }}" \
             --arg repository "${{ github.repository }}" \
+            --arg repository_url "https://github.com/${{ github.repository }}" \
             --arg branch "${{ github.ref_name }}" \
-            --arg diff "${{ steps.diff.outputs.diff }}" \
-            --arg files "${{ steps.files.outputs.files }}" \
+            --argjson files '${{ steps.files.outputs.files }}' \
             --arg project_id "${{ steps.metadata.outputs.project_id }}" \
             --arg project_name "${{ steps.metadata.outputs.project_name }}" \
-            --arg domain "${{ steps.metadata.outputs.domain }}" \
+            --argjson researchers '${{ steps.metadata.outputs.researchers }}' \
+            --arg description "${{ steps.metadata.outputs.description }}" \
             '{
               sha: $sha,
               message: $message,
-              author: $author,
-              author_email: $email,
               timestamp: $timestamp,
-              repository: $repository,
               branch: $branch,
-              diff: $diff,
-              files_changed: ($files | split("\n") | map(select(length > 0))),
+              author: {
+                name: $author_name,
+                email: $author_email,
+                username: $author_username
+              },
+              files: $files,
+              repository: $repository,
+              repository_url: $repository_url,
               metadata: {
+                schema_version: "1.0",
                 project_id: $project_id,
-                project_name: $project_name,
-                domain: $domain
+                title: $project_name,
+                researchers: $researchers,
+                description: $description
               }
             }')
 
