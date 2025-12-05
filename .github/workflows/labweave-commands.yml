@@ -83,7 +83,7 @@ jobs:
           else
             RESP=$(curl -s "${LABWEAVE_API_URL}/api/v1/ingest/status?project_id=${PROJECT_ID}" || echo '{"error": "Could not connect to LabWeave API"}')
           fi
-          echo "response=$(echo "$RESP" | jq -c .)" >> $GITHUB_OUTPUT
+          echo "response=$(echo "$RESP" | base64 | tr -d '\n')" >> $GITHUB_OUTPUT
 
       - name: Post /status response
         if: steps.parse.outputs.command == '/status'
@@ -98,7 +98,9 @@ jobs:
 
             let response;
             try {
-              response = JSON.parse('${{ steps.status_fetch.outputs.response }}' || '{}');
+              const encoded = '${{ steps.status_fetch.outputs.response }}';
+              const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+              response = JSON.parse(decoded || '{}');
             } catch (e) {
               response = { error: 'Invalid API response' };
             }
@@ -142,7 +144,7 @@ jobs:
           else
             RESP=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/methods/${PROJECT_ID}/list" || echo '{"error": "Could not connect to LabWeave API"}')
           fi
-          echo "response=$(echo "$RESP" | jq -c .)" >> $GITHUB_OUTPUT
+          echo "response=$(echo "$RESP" | base64 | tr -d '\n')" >> $GITHUB_OUTPUT
 
       - name: Post /methods response
         if: steps.parse.outputs.command == '/methods'
@@ -151,7 +153,9 @@ jobs:
           script: |
             let response;
             try {
-              response = JSON.parse('${{ steps.methods_fetch.outputs.response }}' || '[]');
+              const encoded = '${{ steps.methods_fetch.outputs.response }}';
+              const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+              response = JSON.parse(decoded || '[]');
             } catch (e) {
               response = { error: 'Invalid API response' };
             }
@@ -206,7 +210,7 @@ jobs:
           else
             RESP=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/parameters/${PROJECT_ID}/list" || echo '{"error": "Could not connect to LabWeave API"}')
           fi
-          echo "response=$(echo "$RESP" | jq -c .)" >> $GITHUB_OUTPUT
+          echo "response=$(echo "$RESP" | base64 | tr -d '\n')" >> $GITHUB_OUTPUT
           echo "param_query=$PARAM_NAME" >> $GITHUB_OUTPUT
 
       - name: Post /provenance response
@@ -222,7 +226,9 @@ jobs:
 
             let response;
             try {
-              response = JSON.parse('${{ steps.provenance_fetch.outputs.response }}' || '{}');
+              const encoded = '${{ steps.provenance_fetch.outputs.response }}';
+              const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+              response = JSON.parse(decoded || '{}');
             } catch (e) {
               response = { error: 'Invalid API response' };
             }
@@ -304,7 +310,8 @@ jobs:
           else
             RESP=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/timeline/${PROJECT_ID}?days=7" || echo '{"error": "Could not connect to LabWeave API"}')
           fi
-          echo "response=$(echo "$RESP" | jq -c .)" >> $GITHUB_OUTPUT
+          # Base64 encode to safely pass JSON with special characters
+          echo "response=$(echo "$RESP" | base64 | tr -d '\n')" >> $GITHUB_OUTPUT
 
       - name: Post /timeline response
         if: steps.parse.outputs.command == '/timeline'
@@ -319,7 +326,9 @@ jobs:
 
             let response;
             try {
-              response = JSON.parse('${{ steps.timeline_fetch.outputs.response }}' || '[]');
+              const encoded = '${{ steps.timeline_fetch.outputs.response }}';
+              const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+              response = JSON.parse(decoded || '[]');
             } catch (e) {
               response = { error: 'Invalid API response' };
             }
