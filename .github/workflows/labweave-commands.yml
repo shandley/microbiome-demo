@@ -73,19 +73,17 @@ jobs:
 
       - name: Handle /status
         if: steps.parse.outputs.command == '/status'
+        id: status_fetch
         env:
           LABWEAVE_API_URL: ${{ secrets.LABWEAVE_API_URL }}
           PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
         run: |
           if [ -z "$LABWEAVE_API_URL" ]; then
-            echo '{"error": "LABWEAVE_API_URL secret not configured"}' > /tmp/response.json
+            RESP='{"error": "LABWEAVE_API_URL secret not configured"}'
           else
-            curl -s "${LABWEAVE_API_URL}/api/v1/ingest/status?project_id=${PROJECT_ID}" > /tmp/response.json || echo '{"error": "Could not connect to LabWeave API"}' > /tmp/response.json
+            RESP=$(curl -s "${LABWEAVE_API_URL}/api/v1/ingest/status?project_id=${PROJECT_ID}" || echo '{"error": "Could not connect to LabWeave API"}')
           fi
-          cat /tmp/response.json
-          echo "RESPONSE<<EOF" >> $GITHUB_ENV
-          cat /tmp/response.json >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          echo "response=$(echo "$RESP" | jq -c .)" >> $GITHUB_OUTPUT
 
       - name: Post /status response
         if: steps.parse.outputs.command == '/status'
@@ -100,7 +98,7 @@ jobs:
 
             let response;
             try {
-              response = JSON.parse(process.env.RESPONSE || '{}');
+              response = JSON.parse('${{ steps.status_fetch.outputs.response }}' || '{}');
             } catch (e) {
               response = { error: 'Invalid API response' };
             }
@@ -134,18 +132,17 @@ jobs:
 
       - name: Handle /methods
         if: steps.parse.outputs.command == '/methods'
+        id: methods_fetch
         env:
           LABWEAVE_API_URL: ${{ secrets.LABWEAVE_API_URL }}
           PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
         run: |
           if [ -z "$LABWEAVE_API_URL" ]; then
-            echo '{"error": "LABWEAVE_API_URL secret not configured"}' > /tmp/response.json
+            RESP='{"error": "LABWEAVE_API_URL secret not configured"}'
           else
-            curl -s "${LABWEAVE_API_URL}/api/v1/provenance/methods/${PROJECT_ID}/list" > /tmp/response.json || echo '{"error": "Could not connect to LabWeave API"}' > /tmp/response.json
+            RESP=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/methods/${PROJECT_ID}/list" || echo '{"error": "Could not connect to LabWeave API"}')
           fi
-          echo "METHODS_RESPONSE<<EOF" >> $GITHUB_ENV
-          cat /tmp/response.json >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          echo "response=$(echo "$RESP" | jq -c .)" >> $GITHUB_OUTPUT
 
       - name: Post /methods response
         if: steps.parse.outputs.command == '/methods'
@@ -154,7 +151,7 @@ jobs:
           script: |
             let response;
             try {
-              response = JSON.parse(process.env.METHODS_RESPONSE || '[]');
+              response = JSON.parse('${{ steps.methods_fetch.outputs.response }}' || '[]');
             } catch (e) {
               response = { error: 'Invalid API response' };
             }
@@ -196,22 +193,21 @@ jobs:
 
       - name: Handle /provenance
         if: steps.parse.outputs.command == '/provenance'
+        id: provenance_fetch
         env:
           LABWEAVE_API_URL: ${{ secrets.LABWEAVE_API_URL }}
           PARAM_NAME: ${{ steps.parse.outputs.args }}
           PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
         run: |
           if [ -z "$LABWEAVE_API_URL" ]; then
-            echo '{"error": "LABWEAVE_API_URL secret not configured"}' > /tmp/response.json
+            RESP='{"error": "LABWEAVE_API_URL secret not configured"}'
           elif [ -n "$PARAM_NAME" ]; then
-            curl -s "${LABWEAVE_API_URL}/api/v1/provenance/parameters/${PROJECT_ID}?parameter_name=${PARAM_NAME}&days=90" > /tmp/response.json || echo '{"error": "Could not connect to LabWeave API"}' > /tmp/response.json
+            RESP=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/parameters/${PROJECT_ID}?parameter_name=${PARAM_NAME}&days=90" || echo '{"error": "Could not connect to LabWeave API"}')
           else
-            curl -s "${LABWEAVE_API_URL}/api/v1/provenance/parameters/${PROJECT_ID}/list" > /tmp/response.json || echo '{"error": "Could not connect to LabWeave API"}' > /tmp/response.json
+            RESP=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/parameters/${PROJECT_ID}/list" || echo '{"error": "Could not connect to LabWeave API"}')
           fi
-          echo "PROVENANCE_RESPONSE<<EOF" >> $GITHUB_ENV
-          cat /tmp/response.json >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-          echo "PARAM_QUERY=$PARAM_NAME" >> $GITHUB_ENV
+          echo "response=$(echo "$RESP" | jq -c .)" >> $GITHUB_OUTPUT
+          echo "param_query=$PARAM_NAME" >> $GITHUB_OUTPUT
 
       - name: Post /provenance response
         if: steps.parse.outputs.command == '/provenance'
@@ -226,11 +222,11 @@ jobs:
 
             let response;
             try {
-              response = JSON.parse(process.env.PROVENANCE_RESPONSE || '{}');
+              response = JSON.parse('${{ steps.provenance_fetch.outputs.response }}' || '{}');
             } catch (e) {
               response = { error: 'Invalid API response' };
             }
-            const paramName = process.env.PARAM_QUERY;
+            const paramName = '${{ steps.provenance_fetch.outputs.param_query }}';
 
             let body;
             if (response.error) {
@@ -298,18 +294,17 @@ jobs:
 
       - name: Handle /timeline
         if: steps.parse.outputs.command == '/timeline'
+        id: timeline_fetch
         env:
           LABWEAVE_API_URL: ${{ secrets.LABWEAVE_API_URL }}
           PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
         run: |
           if [ -z "$LABWEAVE_API_URL" ]; then
-            echo '{"error": "LABWEAVE_API_URL secret not configured"}' > /tmp/response.json
+            RESP='{"error": "LABWEAVE_API_URL secret not configured"}'
           else
-            curl -s "${LABWEAVE_API_URL}/api/v1/provenance/timeline/${PROJECT_ID}?days=7" > /tmp/response.json || echo '{"error": "Could not connect to LabWeave API"}' > /tmp/response.json
+            RESP=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/timeline/${PROJECT_ID}?days=7" || echo '{"error": "Could not connect to LabWeave API"}')
           fi
-          echo "TIMELINE_RESPONSE<<EOF" >> $GITHUB_ENV
-          cat /tmp/response.json >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          echo "response=$(echo "$RESP" | jq -c .)" >> $GITHUB_OUTPUT
 
       - name: Post /timeline response
         if: steps.parse.outputs.command == '/timeline'
@@ -324,7 +319,7 @@ jobs:
 
             let response;
             try {
-              response = JSON.parse(process.env.TIMELINE_RESPONSE || '[]');
+              response = JSON.parse('${{ steps.timeline_fetch.outputs.response }}' || '[]');
             } catch (e) {
               response = { error: 'Invalid API response' };
             }
