@@ -1,0 +1,242 @@
+# LabWeave Issue Commands
+# Responds to /provenance, /rerun, /status commands in GitHub Issues
+
+name: LabWeave Commands
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  handle-command:
+    if: startsWith(github.event.comment.body, '/')
+    runs-on: ubuntu-latest
+    name: Handle LabWeave command
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get project ID from metadata
+        id: metadata
+        run: |
+          if [ -f ".labweave-metadata.json" ]; then
+            PROJECT_ID=$(jq -r '.project_id' .labweave-metadata.json)
+            echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          else
+            PROJECT_ID="${{ github.repository }}"
+            PROJECT_ID=$(echo "$PROJECT_ID" | tr '/' '-')
+            echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Parse command
+        id: parse
+        run: |
+          COMMENT="${{ github.event.comment.body }}"
+          COMMAND=$(echo "$COMMENT" | head -1 | awk '{print $1}')
+          ARGS=$(echo "$COMMENT" | head -1 | cut -d' ' -f2-)
+          echo "command=$COMMAND" >> $GITHUB_OUTPUT
+          echo "args=$ARGS" >> $GITHUB_OUTPUT
+
+      - name: Handle /help
+        if: steps.parse.outputs.command == '/help'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## LabWeave Commands
+
+            | Command | Description | Example |
+            |---------|-------------|---------|
+            | \`/provenance <param>\` | Show parameter change history | \`/provenance alpha\` |
+            | \`/rerun <param>=<value>\` | Request analysis rerun | \`/rerun alpha=0.10\` |
+            | \`/status\` | Show project status | \`/status\` |
+            | \`/timeline\` | Show recent activity | \`/timeline\` |
+            | \`/help\` | Show this help | \`/help\` |
+
+            ---
+            *LabWeave - Your Research Intelligence Partner*`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      - name: Handle /status
+        if: steps.parse.outputs.command == '/status'
+        env:
+          LABWEAVE_API_URL: ${{ secrets.LABWEAVE_API_URL }}
+          PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
+        run: |
+          if [ -z "$LABWEAVE_API_URL" ]; then
+            echo "LABWEAVE_API_URL not set"
+            exit 1
+          fi
+
+          RESPONSE=$(curl -s "${LABWEAVE_API_URL}/api/v1/ingest/status?project_id=${PROJECT_ID}" || echo '{"error": "API unavailable"}')
+
+          echo "RESPONSE<<EOF" >> $GITHUB_ENV
+          echo "$RESPONSE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Post /status response
+        if: steps.parse.outputs.command == '/status'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const response = JSON.parse(process.env.RESPONSE || '{}');
+
+            let body;
+            if (response.error) {
+              body = `## Status Unavailable\n\nCould not reach LabWeave API: ${response.error}`;
+            } else {
+              const lastIng = response.last_ingestion ? new Date(response.last_ingestion).toLocaleString() : 'N/A';
+              body = `## Project Status
+
+            | Metric | Value |
+            |--------|-------|
+            | Total Commits | ${response.total_commits || 'N/A'} |
+            | Last Ingestion | ${lastIng} |
+            | Methods Detected | ${response.methods_count || 'N/A'} |
+            | Parameters Tracked | ${response.parameters_count || 'N/A'} |
+
+            ---
+            *LabWeave - Your Research Intelligence Partner*`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      - name: Handle /provenance
+        if: steps.parse.outputs.command == '/provenance'
+        env:
+          LABWEAVE_API_URL: ${{ secrets.LABWEAVE_API_URL }}
+          PARAM_NAME: ${{ steps.parse.outputs.args }}
+          PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
+        run: |
+          if [ -z "$LABWEAVE_API_URL" ]; then
+            echo "LABWEAVE_API_URL not set"
+            exit 1
+          fi
+
+          if [ -n "$PARAM_NAME" ]; then
+            RESPONSE=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/parameters/${PROJECT_ID}?parameter_name=${PARAM_NAME}&days=90" || echo '{"error": "API unavailable"}')
+          else
+            RESPONSE=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/parameters/${PROJECT_ID}/list" || echo '{"error": "API unavailable"}')
+          fi
+
+          echo "PROVENANCE_RESPONSE<<EOF" >> $GITHUB_ENV
+          echo "$RESPONSE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "PARAM_QUERY=$PARAM_NAME" >> $GITHUB_ENV
+
+      - name: Post /provenance response
+        if: steps.parse.outputs.command == '/provenance'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const response = JSON.parse(process.env.PROVENANCE_RESPONSE || '{}');
+            const paramName = process.env.PARAM_QUERY;
+
+            let body;
+            if (response.error) {
+              body = `## Provenance Unavailable\n\nCould not reach LabWeave API: ${response.error}`;
+            } else if (paramName && response.changes) {
+              if (response.changes.length === 0) {
+                body = `## Parameter History: \`${paramName}\`\n\nNo changes found for this parameter in the last 90 days.\n\n*Tip: Try \`/provenance\` without arguments to see all tracked parameters.*`;
+              } else {
+                let table = '| Date | Old Value | New Value | Commit | Author |\n|------|-----------|-----------|--------|--------|\n';
+                for (const change of response.changes.slice(0, 10)) {
+                  const date = new Date(change.commit_time).toLocaleDateString();
+                  const sha = change.commit_sha.substring(0, 7);
+                  table += `| ${date} | ${change.old_value || '-'} | ${change.new_value} | \`${sha}\` | ${change.author} |\n`;
+                }
+                body = `## Parameter History: \`${paramName}\`\n\n${table}\n\n*Showing ${Math.min(response.changes.length, 10)} of ${response.total_changes} changes*`;
+              }
+            } else if (Array.isArray(response)) {
+              if (response.length === 0) {
+                body = `## Tracked Parameters\n\nNo parameters have been tracked yet.\n\n*Parameters are detected automatically from your code changes.*`;
+              } else {
+                let table = '| Parameter | Changes | Last Changed |\n|-----------|---------|-------------|\n';
+                for (const param of response.slice(0, 15)) {
+                  table += `| \`${param.parameter_name}\` | ${param.change_count} | ${param.last_changed || 'N/A'} |\n`;
+                }
+                body = `## Tracked Parameters\n\n${table}\n\n*Use \`/provenance <parameter_name>\` to see history for a specific parameter.*`;
+              }
+            } else {
+              body = `## Parameter Tracking\n\nNo parameter data available yet. Parameters are detected automatically when you modify values in your code.`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      - name: Handle /timeline
+        if: steps.parse.outputs.command == '/timeline'
+        env:
+          LABWEAVE_API_URL: ${{ secrets.LABWEAVE_API_URL }}
+          PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
+        run: |
+          if [ -z "$LABWEAVE_API_URL" ]; then
+            echo "LABWEAVE_API_URL not set"
+            exit 1
+          fi
+
+          RESPONSE=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/timeline/${PROJECT_ID}?days=7" || echo '[]')
+
+          echo "TIMELINE_RESPONSE<<EOF" >> $GITHUB_ENV
+          echo "$RESPONSE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Post /timeline response
+        if: steps.parse.outputs.command == '/timeline'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let response;
+            try {
+              response = JSON.parse(process.env.TIMELINE_RESPONSE || '[]');
+            } catch (e) {
+              response = [];
+            }
+
+            let body;
+            if (!Array.isArray(response) || response.length === 0) {
+              body = `## Project Timeline\n\nNo commits found in the last 7 days.`;
+            } else {
+              let timeline = '';
+              for (const commit of response.slice(0, 10)) {
+                const date = new Date(commit.commit_time).toLocaleDateString();
+                const sha = commit.commit_sha.substring(0, 7);
+                const msg = commit.commit_message.substring(0, 60);
+                const params = commit.parameters_changed.length > 0
+                  ? ` | ${commit.parameters_changed.join(', ')}`
+                  : '';
+                const methods = commit.methods_used.length > 0
+                  ? ` | ${commit.methods_used.join(', ')}`
+                  : '';
+
+                timeline += `- **${date}** [\`${sha}\`] ${msg}${params}${methods}\n`;
+              }
+
+              body = `## Project Timeline (Last 7 Days)\n\n${timeline}\n\n*Showing ${Math.min(response.length, 10)} commits*`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });

@@ -1,0 +1,106 @@
+# LabWeave Commit Ingestion
+# Automatically sends commit data to LabWeave for analysis
+
+name: LabWeave Ingestion
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    name: Ingest commit to LabWeave
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Get commit diff
+        id: diff
+        run: |
+          DIFF=$(git diff HEAD~1 HEAD -- . ':(exclude)*.lock' ':(exclude)package-lock.json' | head -c 50000 || echo "Initial commit")
+          echo "diff<<EOF" >> $GITHUB_OUTPUT
+          echo "$DIFF" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Get changed files
+        id: files
+        run: |
+          FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git ls-tree --name-only -r HEAD)
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Get project metadata
+        id: metadata
+        run: |
+          if [ -f ".labweave-metadata.json" ]; then
+            PROJECT_ID=$(jq -r '.project_id // empty' .labweave-metadata.json)
+            PROJECT_NAME=$(jq -r '.project_name // empty' .labweave-metadata.json)
+            DOMAIN=$(jq -r '.domain // empty' .labweave-metadata.json)
+          fi
+          echo "project_id=${PROJECT_ID:-${{ github.repository }}}" >> $GITHUB_OUTPUT
+          echo "project_name=${PROJECT_NAME:-${{ github.event.repository.name }}}" >> $GITHUB_OUTPUT
+          echo "domain=${DOMAIN:-unknown}" >> $GITHUB_OUTPUT
+
+      - name: Send to LabWeave
+        env:
+          LABWEAVE_API_URL: ${{ secrets.LABWEAVE_API_URL }}
+          LABWEAVE_TOKEN: ${{ secrets.LABWEAVE_TOKEN }}
+        run: |
+          if [ -z "$LABWEAVE_API_URL" ]; then
+            echo "LABWEAVE_API_URL not configured, skipping ingestion"
+            exit 0
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg sha "${{ github.sha }}" \
+            --arg message "${{ github.event.head_commit.message }}" \
+            --arg author "${{ github.event.head_commit.author.username }}" \
+            --arg email "${{ github.event.head_commit.author.email }}" \
+            --arg timestamp "${{ github.event.head_commit.timestamp }}" \
+            --arg repository "${{ github.repository }}" \
+            --arg branch "${{ github.ref_name }}" \
+            --arg diff "${{ steps.diff.outputs.diff }}" \
+            --arg files "${{ steps.files.outputs.files }}" \
+            --arg project_id "${{ steps.metadata.outputs.project_id }}" \
+            --arg project_name "${{ steps.metadata.outputs.project_name }}" \
+            --arg domain "${{ steps.metadata.outputs.domain }}" \
+            '{
+              sha: $sha,
+              message: $message,
+              author: $author,
+              author_email: $email,
+              timestamp: $timestamp,
+              repository: $repository,
+              branch: $branch,
+              diff: $diff,
+              files_changed: ($files | split("\n") | map(select(length > 0))),
+              metadata: {
+                project_id: $project_id,
+                project_name: $project_name,
+                domain: $domain
+              }
+            }')
+
+          echo "Sending commit ${{ github.sha }} to LabWeave..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${LABWEAVE_API_URL}/api/v1/ingest/commit" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${LABWEAVE_TOKEN}" \
+            -d "$PAYLOAD")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "Successfully ingested commit"
+            echo "$BODY" | jq .
+          else
+            echo "Failed to ingest commit (HTTP $HTTP_CODE)"
+            echo "$BODY"
+            exit 1
+          fi

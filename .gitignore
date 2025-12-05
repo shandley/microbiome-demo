@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+venv/
+.venv/
+
+# Data files (too large for git)
+*.fastq
+*.fastq.gz
+*.fasta
+*.fasta.gz
+
+# Results (regenerated)
+results/*.csv
+results/*.tsv
+results/*.pdf
+results/*.png
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

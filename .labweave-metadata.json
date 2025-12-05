@@ -1,0 +1,10 @@
+{
+  "project_id": "microbiome-demo",
+  "project_name": "Gut Microbiome Diversity Study",
+  "domain": "computational-biology",
+  "subdomain": "microbiome",
+  "description": "16S rRNA analysis of gut microbiome samples comparing treatment vs control groups",
+  "pi": "shandley",
+  "team": ["shandley"],
+  "created": "2025-12-04"
+}
