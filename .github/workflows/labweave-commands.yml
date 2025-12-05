@@ -1,5 +1,5 @@
 # LabWeave Issue Commands
-# Responds to /provenance, /rerun, /status commands in GitHub Issues
+# Responds to /status, /methods, /provenance, /timeline commands in GitHub Issues
 
 name: LabWeave Commands
 
@@ -39,6 +39,9 @@ jobs:
           COMMENT="${{ github.event.comment.body }}"
           COMMAND=$(echo "$COMMENT" | head -1 | awk '{print $1}')
           ARGS=$(echo "$COMMENT" | head -1 | cut -d' ' -f2-)
+          if [ "$ARGS" = "$COMMAND" ]; then
+            ARGS=""
+          fi
           echo "command=$COMMAND" >> $GITHUB_OUTPUT
           echo "args=$ARGS" >> $GITHUB_OUTPUT
 
@@ -75,14 +78,13 @@ jobs:
           PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
         run: |
           if [ -z "$LABWEAVE_API_URL" ]; then
-            echo "LABWEAVE_API_URL not set"
-            exit 1
+            echo '{"error": "LABWEAVE_API_URL secret not configured"}' > /tmp/response.json
+          else
+            curl -s "${LABWEAVE_API_URL}/api/v1/ingest/status?project_id=${PROJECT_ID}" > /tmp/response.json || echo '{"error": "Could not connect to LabWeave API"}' > /tmp/response.json
           fi
-
-          RESPONSE=$(curl -s "${LABWEAVE_API_URL}/api/v1/ingest/status?project_id=${PROJECT_ID}" || echo '{"error": "API unavailable"}')
-
+          cat /tmp/response.json
           echo "RESPONSE<<EOF" >> $GITHUB_ENV
-          echo "$RESPONSE" >> $GITHUB_ENV
+          cat /tmp/response.json >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
       - name: Post /status response
@@ -90,24 +92,37 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const response = JSON.parse(process.env.RESPONSE || '{}');
+            const formatDate = (isoString) => {
+              if (!isoString) return 'Never';
+              const date = new Date(isoString);
+              return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+            };
+
+            let response;
+            try {
+              response = JSON.parse(process.env.RESPONSE || '{}');
+            } catch (e) {
+              response = { error: 'Invalid API response' };
+            }
 
             let body;
             if (response.error) {
-              body = `## Status Unavailable\n\nCould not reach LabWeave API: ${response.error}`;
+              body = `## Status Unavailable
+
+            Could not retrieve project status: **${response.error}**
+
+            *Check that the repository has \`LABWEAVE_API_URL\` secret configured.*`;
             } else {
-              const lastIng = response.last_ingestion ? new Date(response.last_ingestion).toLocaleString() : 'N/A';
               body = `## Project Status
 
             | Metric | Value |
             |--------|-------|
-            | Total Commits | ${response.total_commits || 'N/A'} |
-            | Last Ingestion | ${lastIng} |
-            | Methods Detected | ${response.methods_count || 'N/A'} |
-            | Parameters Tracked | ${response.parameters_count || 'N/A'} |
+            | Total Commits | ${response.total_commits ?? 0} |
+            | Last Ingestion | ${formatDate(response.last_ingestion)} |
+            | Methods Detected | ${response.methods_count ?? 0} |
+            | Parameters Tracked | ${response.parameters_count ?? 0} |
 
-            ---
-            *LabWeave - Your Research Intelligence Partner*`;
+            *Use \`/methods\` to see detected methods or \`/provenance\` to see tracked parameters.*`;
             }
 
             await github.rest.issues.createComment({
@@ -124,14 +139,12 @@ jobs:
           PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
         run: |
           if [ -z "$LABWEAVE_API_URL" ]; then
-            echo "LABWEAVE_API_URL not set"
-            exit 1
+            echo '{"error": "LABWEAVE_API_URL secret not configured"}' > /tmp/response.json
+          else
+            curl -s "${LABWEAVE_API_URL}/api/v1/provenance/methods/${PROJECT_ID}/list" > /tmp/response.json || echo '{"error": "Could not connect to LabWeave API"}' > /tmp/response.json
           fi
-
-          RESPONSE=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/methods/${PROJECT_ID}/list" || echo '[]')
-
           echo "METHODS_RESPONSE<<EOF" >> $GITHUB_ENV
-          echo "$RESPONSE" >> $GITHUB_ENV
+          cat /tmp/response.json >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
       - name: Post /methods response
@@ -143,18 +156,35 @@ jobs:
             try {
               response = JSON.parse(process.env.METHODS_RESPONSE || '[]');
             } catch (e) {
-              response = [];
+              response = { error: 'Invalid API response' };
             }
 
             let body;
-            if (!Array.isArray(response) || response.length === 0) {
-              body = `## Analysis Methods\n\nNo methods detected yet.\n\n*Methods are detected automatically from your code changes (e.g., DESeq2, PERMANOVA, t-test).*`;
+            if (response.error) {
+              body = `## Methods Unavailable
+
+            Could not retrieve methods: **${response.error}**`;
+            } else if (!Array.isArray(response) || response.length === 0) {
+              body = `## Analysis Methods
+
+            No methods detected yet.
+
+            Methods are detected automatically when you commit code that uses analysis tools like:
+            - Statistical tests (t-test, ANOVA, PERMANOVA)
+            - Differential expression (DESeq2, edgeR, limma)
+            - Machine learning (random forest, SVM)
+            - Microbiome tools (DADA2, QIIME2)`;
             } else {
               let table = '| Method | Times Used |\n|--------|------------|\n';
               for (const method of response) {
                 table += `| \`${method.method_name}\` | ${method.usage_count} |\n`;
               }
-              body = `## Analysis Methods\n\n${table}\n\n*${response.length} methods detected across ${response.reduce((sum, m) => sum + m.usage_count, 0)} usages*`;
+              const totalUsages = response.reduce((sum, m) => sum + m.usage_count, 0);
+              body = `## Analysis Methods
+
+            ${table}
+
+            *${response.length} method${response.length === 1 ? '' : 's'} detected across ${totalUsages} usage${totalUsages === 1 ? '' : 's'}*`;
             }
 
             await github.rest.issues.createComment({
@@ -172,18 +202,14 @@ jobs:
           PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
         run: |
           if [ -z "$LABWEAVE_API_URL" ]; then
-            echo "LABWEAVE_API_URL not set"
-            exit 1
-          fi
-
-          if [ -n "$PARAM_NAME" ]; then
-            RESPONSE=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/parameters/${PROJECT_ID}?parameter_name=${PARAM_NAME}&days=90" || echo '{"error": "API unavailable"}')
+            echo '{"error": "LABWEAVE_API_URL secret not configured"}' > /tmp/response.json
+          elif [ -n "$PARAM_NAME" ]; then
+            curl -s "${LABWEAVE_API_URL}/api/v1/provenance/parameters/${PROJECT_ID}?parameter_name=${PARAM_NAME}&days=90" > /tmp/response.json || echo '{"error": "Could not connect to LabWeave API"}' > /tmp/response.json
           else
-            RESPONSE=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/parameters/${PROJECT_ID}/list" || echo '{"error": "API unavailable"}')
+            curl -s "${LABWEAVE_API_URL}/api/v1/provenance/parameters/${PROJECT_ID}/list" > /tmp/response.json || echo '{"error": "Could not connect to LabWeave API"}' > /tmp/response.json
           fi
-
           echo "PROVENANCE_RESPONSE<<EOF" >> $GITHUB_ENV
-          echo "$RESPONSE" >> $GITHUB_ENV
+          cat /tmp/response.json >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
           echo "PARAM_QUERY=$PARAM_NAME" >> $GITHUB_ENV
 
@@ -192,36 +218,75 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const response = JSON.parse(process.env.PROVENANCE_RESPONSE || '{}');
+            const formatDate = (isoString) => {
+              if (!isoString) return 'N/A';
+              const date = new Date(isoString);
+              return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+            };
+
+            let response;
+            try {
+              response = JSON.parse(process.env.PROVENANCE_RESPONSE || '{}');
+            } catch (e) {
+              response = { error: 'Invalid API response' };
+            }
             const paramName = process.env.PARAM_QUERY;
 
             let body;
             if (response.error) {
-              body = `## Provenance Unavailable\n\nCould not reach LabWeave API: ${response.error}`;
-            } else if (paramName && response.changes) {
+              body = `## Provenance Unavailable
+
+            Could not retrieve provenance data: **${response.error}**`;
+            } else if (paramName && response.changes !== undefined) {
+              // Specific parameter history
               if (response.changes.length === 0) {
-                body = `## Parameter History: \`${paramName}\`\n\nNo changes found for this parameter in the last 90 days.\n\n*Tip: Try \`/provenance\` without arguments to see all tracked parameters.*`;
+                body = `## Parameter History: \`${paramName}\`
+
+            No changes found for this parameter in the last 90 days.
+
+            *Use \`/provenance\` without arguments to see all tracked parameters.*`;
               } else {
                 let table = '| Date | Old Value | New Value | Commit | Author |\n|------|-----------|-----------|--------|--------|\n';
                 for (const change of response.changes.slice(0, 10)) {
-                  const date = new Date(change.commit_time).toLocaleDateString();
+                  const date = formatDate(change.commit_time);
                   const sha = change.commit_sha.substring(0, 7);
-                  table += `| ${date} | ${change.old_value || '-'} | ${change.new_value} | \`${sha}\` | ${change.author} |\n`;
+                  table += `| ${date} | \`${change.old_value || '-'}\` | \`${change.new_value}\` | \`${sha}\` | ${change.author} |\n`;
                 }
-                body = `## Parameter History: \`${paramName}\`\n\n${table}\n\n*Showing ${Math.min(response.changes.length, 10)} of ${response.total_changes} changes*`;
+                body = `## Parameter History: \`${paramName}\`
+
+            ${table}
+
+            *Showing ${Math.min(response.changes.length, 10)} of ${response.total_changes} change${response.total_changes === 1 ? '' : 's'}*`;
               }
             } else if (Array.isArray(response)) {
+              // List of all parameters
               if (response.length === 0) {
-                body = `## Tracked Parameters\n\nNo parameters have been tracked yet.\n\n*Parameters are detected automatically from your code changes.*`;
+                body = `## Tracked Parameters
+
+            No parameters tracked yet.
+
+            Parameters are detected automatically when you modify values in your code, such as:
+            - \`alpha = 0.05\` (significance threshold)
+            - \`rarefaction_depth = 10000\`
+            - \`n_iterations = 1000\``;
               } else {
                 let table = '| Parameter | Changes | Last Changed |\n|-----------|---------|-------------|\n';
                 for (const param of response.slice(0, 15)) {
-                  table += `| \`${param.parameter_name}\` | ${param.change_count} | ${param.last_changed || 'N/A'} |\n`;
+                  const lastChanged = formatDate(param.last_changed);
+                  table += `| \`${param.parameter_name}\` | ${param.change_count} | ${lastChanged} |\n`;
                 }
-                body = `## Tracked Parameters\n\n${table}\n\n*Use \`/provenance <parameter_name>\` to see history for a specific parameter.*`;
+                body = `## Tracked Parameters
+
+            ${table}
+
+            *Use \`/provenance <parameter_name>\` to see the full history for a parameter.*`;
               }
             } else {
-              body = `## Parameter Tracking\n\nNo parameter data available yet. Parameters are detected automatically when you modify values in your code.`;
+              body = `## Parameter Tracking
+
+            No parameter data available yet.
+
+            Parameters are detected automatically when you modify values in your code.`;
             }
 
             await github.rest.issues.createComment({
@@ -238,14 +303,12 @@ jobs:
           PROJECT_ID: ${{ steps.metadata.outputs.project_id }}
         run: |
           if [ -z "$LABWEAVE_API_URL" ]; then
-            echo "LABWEAVE_API_URL not set"
-            exit 1
+            echo '{"error": "LABWEAVE_API_URL secret not configured"}' > /tmp/response.json
+          else
+            curl -s "${LABWEAVE_API_URL}/api/v1/provenance/timeline/${PROJECT_ID}?days=7" > /tmp/response.json || echo '{"error": "Could not connect to LabWeave API"}' > /tmp/response.json
           fi
-
-          RESPONSE=$(curl -s "${LABWEAVE_API_URL}/api/v1/provenance/timeline/${PROJECT_ID}?days=7" || echo '[]')
-
           echo "TIMELINE_RESPONSE<<EOF" >> $GITHUB_ENV
-          echo "$RESPONSE" >> $GITHUB_ENV
+          cat /tmp/response.json >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
       - name: Post /timeline response
@@ -253,34 +316,77 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const formatDate = (isoString) => {
+              if (!isoString) return 'N/A';
+              const date = new Date(isoString);
+              return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+            };
+
             let response;
             try {
               response = JSON.parse(process.env.TIMELINE_RESPONSE || '[]');
             } catch (e) {
-              response = [];
+              response = { error: 'Invalid API response' };
             }
 
             let body;
-            if (!Array.isArray(response) || response.length === 0) {
-              body = `## Project Timeline\n\nNo commits found in the last 7 days.`;
+            if (response.error) {
+              body = `## Timeline Unavailable
+
+            Could not retrieve timeline: **${response.error}**`;
+            } else if (!Array.isArray(response) || response.length === 0) {
+              body = `## Project Timeline
+
+            No commits found in the last 7 days.
+
+            *Commits are tracked automatically when pushed to this repository.*`;
             } else {
               let timeline = '';
               for (const commit of response.slice(0, 10)) {
-                const date = new Date(commit.commit_time).toLocaleDateString();
+                const date = formatDate(commit.commit_time);
                 const sha = commit.commit_sha.substring(0, 7);
-                const msg = commit.commit_message.substring(0, 60);
-                const params = commit.parameters_changed.length > 0
-                  ? ` | ${commit.parameters_changed.join(', ')}`
-                  : '';
-                const methods = commit.methods_used.length > 0
-                  ? ` | ${commit.methods_used.join(', ')}`
-                  : '';
+                const msg = commit.commit_message.split('\n')[0].substring(0, 50);
 
-                timeline += `- **${date}** [\`${sha}\`] ${msg}${params}${methods}\n`;
+                let extras = [];
+                if (commit.parameters_changed && commit.parameters_changed.length > 0) {
+                  extras.push(`params: ${commit.parameters_changed.join(', ')}`);
+                }
+                if (commit.methods_used && commit.methods_used.length > 0) {
+                  extras.push(`methods: ${commit.methods_used.join(', ')}`);
+                }
+                const extrasStr = extras.length > 0 ? `\n  - *${extras.join(' | ')}*` : '';
+
+                timeline += `- **${date}** [\`${sha}\`](https://github.com/${{ github.repository }}/commit/${commit.commit_sha}) ${msg}${extrasStr}\n`;
               }
 
-              body = `## Project Timeline (Last 7 Days)\n\n${timeline}\n\n*Showing ${Math.min(response.length, 10)} commits*`;
+              body = `## Project Timeline (Last 7 Days)
+
+            ${timeline}
+
+            *${response.length} commit${response.length === 1 ? '' : 's'} tracked*`;
             }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      - name: Handle unknown command
+        if: |
+          steps.parse.outputs.command != '/help' &&
+          steps.parse.outputs.command != '/status' &&
+          steps.parse.outputs.command != '/methods' &&
+          steps.parse.outputs.command != '/provenance' &&
+          steps.parse.outputs.command != '/timeline'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const command = '${{ steps.parse.outputs.command }}';
+            const body = `Unknown command: \`${command}\`
+
+            Use \`/help\` to see available commands.`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
