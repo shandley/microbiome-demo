@@ -9,7 +9,7 @@ trim_left: 10
 trim_right: 10
 
 # Rarefaction
-rarefaction_depth: 10000
+rarefaction_depth: 15000  # Increased depth for better coverage
 min_samples_per_group: 3
 
 # Alpha Diversity
@@ -23,7 +23,7 @@ beta_metric: bray_curtis
 permanova_permutations: 999
 
 # Differential Abundance
-significance_threshold: 0.05
+significance_threshold: 0.01  # More stringent threshold for publication
 min_prevalence: 0.1
 min_abundance: 0.001
 differential_method: deseq2  # options: deseq2, ancom, aldex2
